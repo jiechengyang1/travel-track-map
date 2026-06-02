@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Waypoint, Photo } from '../types';
 import { MapPin, Compass, Eye, Heart, Camera, Upload, Award, Footprints } from 'lucide-react';
 
@@ -7,6 +7,9 @@ interface SidebarProps {
   tripDesc: string;
   waypoints: Waypoint[];
   activeWaypoint: Waypoint | null;
+  playbackWaypoint: Waypoint | null;
+  isPlaying: boolean;
+  visitedWaypointIds: Set<string>;
   onSelectWaypoint: (waypoint: Waypoint) => void;
   onPhotoClick: (photo: Photo, waypoint: Waypoint) => void;
   totalDistance: string;
@@ -20,6 +23,9 @@ export default function Sidebar({
   tripDesc,
   waypoints,
   activeWaypoint,
+  playbackWaypoint,
+  isPlaying,
+  visitedWaypointIds,
   onSelectWaypoint,
   onPhotoClick,
   totalDistance,
@@ -27,6 +33,20 @@ export default function Sidebar({
   endDate,
   onOpenImporter,
 }: SidebarProps) {
+
+  useEffect(() => {
+    if (!activeWaypoint) return;
+
+    const cardEl = document.getElementById(`waypoint-card-${activeWaypoint.id}`);
+    cardEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [activeWaypoint]);
+
+  useEffect(() => {
+    if (!isPlaying || !playbackWaypoint) return;
+
+    const cardEl = document.getElementById(`waypoint-card-${playbackWaypoint.id}`);
+    cardEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [isPlaying, playbackWaypoint]);
 
   // Category visual customizers
   const getCategoryTheme = (category: string) => {
@@ -101,6 +121,7 @@ export default function Sidebar({
         <div className="relative border-l border-slate-800 pl-5 space-y-8 py-2">
           {waypoints.map((wp, idx) => {
             const isActive = activeWaypoint?.id === wp.id;
+            const isVisited = visitedWaypointIds.has(wp.id);
             const theme = getCategoryTheme(wp.category);
 
             return (
@@ -114,7 +135,9 @@ export default function Sidebar({
                 <span className={`absolute -left-[27px] top-1.5 w-3.5 h-3.5 rounded-full border-2 transition-all duration-300 ring-4 ${
                   isActive
                     ? 'bg-red-500 border-slate-900 ring-red-500/20 scale-125 z-10'
-                    : 'bg-slate-900 border-slate-650 ring-transparent group-hover:border-emerald-400'
+                    : isVisited
+                    ? 'bg-emerald-400 border-slate-900 ring-emerald-500/20'
+                    : 'bg-slate-600 border-slate-900 ring-transparent group-hover:border-slate-400'
                 }`} />
 
                 {/* Day flag floating pill */}

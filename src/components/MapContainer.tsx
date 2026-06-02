@@ -5,6 +5,7 @@ import { Layers, Settings, Navigation, Key, HelpCircle, Check, Compass, ShieldCh
 interface MapContainerProps {
   tripData: TripData;
   currentProgress: number; // Index along routes
+  visitedWaypointIds: Set<string>;
   onProgressChange: (progress: number) => void;
   activeWaypoint: Waypoint | null;
   onSelectWaypoint: (waypoint: Waypoint) => void;
@@ -20,6 +21,7 @@ declare global {
 export default function MapContainer({
   tripData,
   currentProgress,
+  visitedWaypointIds,
   onProgressChange,
   activeWaypoint,
   onSelectWaypoint,
@@ -28,7 +30,8 @@ export default function MapContainer({
   const mapRef = useRef<any>(null);
   const markerRefsRef = useRef<any[]>([]);
   const vehicleMarkerRef = useRef<any>(null);
-  const polylineRef = useRef<any>(null);
+  const passedRouteRef = useRef<any>(null);
+  const remainingRouteRef = useRef<any>(null);
   const polylineShadowRef = useRef<any>(null);
   const satelliteLayerRef = useRef<any>(null);
 
@@ -172,6 +175,12 @@ export default function MapContainer({
     if (mapRef.current) {
       mapRef.current.destroy();
       mapRef.current = null;
+      vehicleMarkerRef.current = null;
+      satelliteLayerRef.current = null;
+      passedRouteRef.current = null;
+      remainingRouteRef.current = null;
+      polylineShadowRef.current = null;
+      markerRefsRef.current = [];
     }
 
     const initialCenter = tripData.routes[0] || [120.153576, 30.287459]; // Fallback to West Lake, Hangzhou
@@ -216,34 +225,29 @@ export default function MapContainer({
     // Map each spot to custom styled AMap.Marker inside GCJ-02 coordinates
     tripData.waypoints.forEach((wp) => {
       const isSelected = activeWaypoint?.id === wp.id;
+      const isVisited = visitedWaypointIds.has(wp.id);
       const markerEl = document.createElement('div');
       markerEl.className = `custom-marker ${isSelected ? 'active' : ''}`;
 
-      let categoryColor = 'bg-emerald-500';
-      let categoryBorder = 'border-emerald-400';
+      let categoryColor = isVisited ? 'bg-emerald-500' : 'bg-slate-500';
+      let categoryBorder = isVisited ? 'border-emerald-400' : 'border-slate-400';
       let categoryIcon = '📍';
 
       if (wp.category === 'hotel') {
-        categoryColor = 'bg-indigo-500';
-        categoryBorder = 'border-indigo-400';
         categoryIcon = '🏨';
       } else if (wp.category === 'dining') {
-        categoryColor = 'bg-orange-500';
-        categoryBorder = 'border-orange-400';
         categoryIcon = '🍲';
       } else if (wp.category === 'transit') {
-        categoryColor = 'bg-slate-500';
-        categoryBorder = 'border-slate-400';
         categoryIcon = '🚗';
       }
 
       markerEl.innerHTML = `
         <div class="flex flex-col items-center justify-center transform -translate-y-2 group cursor-pointer">
           <!-- Pulse ripple back effect -->
-          <div class="absolute w-6 h-6 rounded-full ${categoryColor}/40 animate-ping -z-10 group-hover:scale-125"></div>
+          <div class="absolute w-5 h-5 rounded-full ${categoryColor}/40 animate-ping -z-10 group-hover:scale-125"></div>
           <!-- Custom Base Bubble -->
-          <div class="w-8 h-8 rounded-full border-2 border-white text-md flex items-center justify-center shadow-lg transition duration-200 transform hover:scale-110 ${categoryColor} text-white">
-            <span class="text-xs font-semibold leading-none">${categoryIcon}</span>
+          <div class="w-6 h-6 rounded-full border-2 border-white text-md flex items-center justify-center shadow-lg transition duration-200 transform hover:scale-110 ${categoryColor} text-white">
+            <span class="text-[10px] font-semibold leading-none">${categoryIcon}</span>
           </div>
           <!-- Pin title box -->
           <div class="mt-1 px-1.5 py-0.5 rounded shadow-md bg-slate-900/90 border border-slate-800 text-[10px] text-slate-100 font-medium whitespace-nowrap opacity-75 group-hover:opacity-100 transition duration-150">
@@ -256,8 +260,9 @@ export default function MapContainer({
       const marker = new window.AMap.Marker({
         position: wp.coordinate,
         content: markerEl,
-        offset: new window.AMap.Pixel(-16, -16),
+        offset: new window.AMap.Pixel(-12, -12),
         extData: wp,
+        zIndex: 10,
       });
 
       marker.on('click', () => {
@@ -274,7 +279,21 @@ export default function MapContainer({
     const map = mapRef.current;
     if (!map || !window.AMap || tripData.routes.length === 0) return;
 
-    if (polylineRef.current) polylineRef.current.setMap(null);
+    const clampedProgress = Math.max(0, Math.min(tripData.routes.length - 1, currentProgress));
+    const progressIndex = Math.floor(clampedProgress);
+    const nextIndex = Math.min(progressIndex + 1, tripData.routes.length - 1);
+    const splitPoint = tripData.routes[nextIndex] || tripData.routes[progressIndex];
+    const passedRoutes = [
+      ...tripData.routes.slice(0, progressIndex + 1),
+      splitPoint,
+    ];
+    const remainingRoutes = [
+      splitPoint,
+      ...tripData.routes.slice(nextIndex + 1),
+    ];
+
+    if (passedRouteRef.current) passedRouteRef.current.setMap(null);
+    if (remainingRouteRef.current) remainingRouteRef.current.setMap(null);
     if (polylineShadowRef.current) polylineShadowRef.current.setMap(null);
 
     // Deep casing shadow line underneath
@@ -289,22 +308,64 @@ export default function MapContainer({
     });
     polylineShadowRef.current.setMap(map);
 
-    // Emerald main solid path
-    polylineRef.current = new window.AMap.Polyline({
-      path: tripData.routes,
-      strokeColor: '#10b981',
+    // Muted remaining route
+    remainingRouteRef.current = new window.AMap.Polyline({
+      path: remainingRoutes,
+      strokeColor: '#475569',
       strokeWeight: 4.5,
-      strokeOpacity: 0.90,
+      strokeOpacity: 0.70,
       strokeStyle: 'solid',
       lineJoin: 'round',
       lineCap: 'round',
     });
-    polylineRef.current.setMap(map);
+    remainingRouteRef.current.setMap(map);
+
+    // Highlighted passed route
+    passedRouteRef.current = new window.AMap.Polyline({
+      path: passedRoutes,
+      strokeColor: '#10b981',
+      strokeWeight: 4.5,
+      strokeOpacity: 0.95,
+      strokeStyle: 'solid',
+      lineJoin: 'round',
+      lineCap: 'round',
+    });
+    passedRouteRef.current.setMap(map);
 
     // Auto fit viewport bounds
-    if (tripData.routes.length > 0) {
-      map.setFitView([polylineRef.current], false, [50, 50, 50, 50]);
-    }
+    map.setFitView([polylineShadowRef.current], false, [50, 50, 50, 50]);
+  };
+
+  const updateTravelRoutesProgress = () => {
+    if (!passedRouteRef.current || !remainingRouteRef.current || tripData.routes.length === 0) return;
+
+    const clampedProgress = Math.max(0, Math.min(tripData.routes.length - 1, currentProgress));
+    const progressIndex = Math.floor(clampedProgress);
+    const nextIndex = Math.min(progressIndex + 1, tripData.routes.length - 1);
+    const progressFraction = clampedProgress - progressIndex;
+    const currentPoint = tripData.routes[progressIndex];
+    const nextPoint = tripData.routes[nextIndex];
+
+    if (!currentPoint || !nextPoint) return;
+
+    const splitPoint: [number, number] = progressIndex === nextIndex
+      ? currentPoint
+      : [
+          currentPoint[0] + (nextPoint[0] - currentPoint[0]) * progressFraction,
+          currentPoint[1] + (nextPoint[1] - currentPoint[1]) * progressFraction,
+        ];
+
+    const passedRoutes = [
+      ...tripData.routes.slice(0, progressIndex + 1),
+      splitPoint,
+    ];
+    const remainingRoutes = [
+      splitPoint,
+      ...tripData.routes.slice(nextIndex + 1),
+    ];
+
+    passedRouteRef.current.setPath(passedRoutes);
+    remainingRouteRef.current.setPath(remainingRoutes);
   };
 
   // Monitor waypoints updates
@@ -312,7 +373,13 @@ export default function MapContainer({
     if (mapLoaded && mapRef.current) {
       setupInteractiveOverlays();
     }
-  }, [tripData, activeWaypoint, mapLoaded]);
+  }, [tripData, activeWaypoint, mapLoaded, visitedWaypointIds]);
+
+  useEffect(() => {
+    if (mapLoaded && mapRef.current) {
+      updateTravelRoutesProgress();
+    }
+  }, [currentProgress, mapLoaded, tripData.routes]);
 
   // Handle Satellite Base layer updates
   useEffect(() => {
@@ -343,10 +410,10 @@ export default function MapContainer({
       const vEl = document.createElement('div');
       vEl.className = 'traveler-avatar z-30 transition-all';
       vEl.innerHTML = `
-        <div class="relative flex items-center justify-center h-10 w-10">
-          <span class="absolute inline-flex h-8 w-8 rounded-full bg-emerald-400 opacity-60 animate-ping"></span>
-          <span class="relative inline-flex rounded-full h-7 w-7 bg-emerald-500 border-2 border-white shadow-xl flex items-center justify-center">
-            <span class="text-sm">🚗</span>
+        <div class="relative flex items-center justify-center h-14 w-14">
+          <span class="absolute inline-flex h-11 w-11 rounded-full bg-emerald-400 opacity-60 animate-ping"></span>
+          <span class="relative inline-flex rounded-full h-10 w-10 bg-emerald-500 border-2 border-white shadow-xl flex items-center justify-center">
+            <span class="text-xl">🚗</span>
           </span>
         </div>
       `;
@@ -354,7 +421,8 @@ export default function MapContainer({
       vehicleMarkerRef.current = new window.AMap.Marker({
         position: travelerCoord,
         content: vEl,
-        offset: new window.AMap.Pixel(-20, -20),
+        offset: new window.AMap.Pixel(-28, -28),
+        zIndex: 100,
       });
       vehicleMarkerRef.current.setMap(map);
     } else {

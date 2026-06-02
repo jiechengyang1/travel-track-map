@@ -129,6 +129,53 @@ export default function App() {
     return waypointPhotos.findIndex(p => p.url === activePhoto.url);
   }, [waypointPhotos, activePhoto]);
 
+  const visitedWaypointIds = useMemo(() => {
+    if (tripData.waypoints.length === 0 || tripData.routes.length <= 1) {
+      return new Set<string>();
+    }
+
+    const lastWaypoint = tripData.waypoints[tripData.waypoints.length - 1];
+    const lastDistance = lastWaypoint?.distanceFromStart;
+
+    return new Set(
+      tripData.waypoints
+        .filter((wp, index) => {
+          const position = wp.distanceFromStart !== undefined && lastDistance
+            ? (wp.distanceFromStart / lastDistance) * (tripData.routes.length - 1)
+            : (tripData.waypoints.length > 1
+              ? (index / (tripData.waypoints.length - 1)) * (tripData.routes.length - 1)
+              : 0);
+
+          return position <= currentProgress;
+        })
+        .map((wp) => wp.id)
+    );
+  }, [tripData.waypoints, tripData.routes.length, currentProgress]);
+
+  const playbackWaypoint = useMemo(() => {
+    if (tripData.waypoints.length === 0 || tripData.routes.length <= 1) {
+      return null;
+    }
+
+    const lastWaypoint = tripData.waypoints[tripData.waypoints.length - 1];
+    const lastDistance = lastWaypoint?.distanceFromStart;
+
+    return tripData.waypoints.reduce<{ waypoint: Waypoint | null; diff: number }>((closest, wp, index) => {
+      const position = wp.distanceFromStart !== undefined && lastDistance
+        ? (wp.distanceFromStart / lastDistance) * (tripData.routes.length - 1)
+        : (tripData.waypoints.length > 1
+          ? (index / (tripData.waypoints.length - 1)) * (tripData.routes.length - 1)
+          : 0);
+      const diff = Math.abs(position - currentProgress);
+
+      if (diff < closest.diff) {
+        return { waypoint: wp, diff };
+      }
+
+      return closest;
+    }, { waypoint: null, diff: Infinity }).waypoint;
+  }, [tripData.waypoints, tripData.routes.length, currentProgress]);
+
   const hasPrevPhoto = activePhotoIndex > 0;
   const hasNextPhoto = activePhotoIndex !== -1 && activePhotoIndex < waypointPhotos.length - 1;
 
@@ -163,6 +210,9 @@ export default function App() {
         tripDesc={tripData.description}
         waypoints={tripData.waypoints}
         activeWaypoint={activeWaypoint}
+        playbackWaypoint={playbackWaypoint}
+        isPlaying={isPlaying}
+        visitedWaypointIds={visitedWaypointIds}
         onSelectWaypoint={handleSelectWaypoint}
         onPhotoClick={handlePhotoClick}
         totalDistance={tripData.totalDistance}
@@ -178,6 +228,7 @@ export default function App() {
         <MapContainer
           tripData={tripData}
           currentProgress={currentProgress}
+          visitedWaypointIds={visitedWaypointIds}
           onProgressChange={setCurrentProgress}
           activeWaypoint={activeWaypoint}
           onSelectWaypoint={handleSelectWaypoint}
