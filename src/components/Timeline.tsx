@@ -1,18 +1,19 @@
-import React, { useMemo } from 'react';
-import { Play, Pause, RotateCcw, FastForward, Navigation, Calendar } from 'lucide-react';
-import { Waypoint } from '../types';
+import React from 'react';
+import { Play, Pause, RotateCcw, Navigation, Calendar } from 'lucide-react';
+import { KeyNode } from '../types';
 
 interface TimelineProps {
-  currentProgress: number; // Index or percentage of routes (0 to routes.length - 1)
+  currentProgress: number;
   onProgressChange: (progress: number) => void;
   isPlaying: boolean;
   setIsPlaying: (playing: boolean) => void;
   playbackSpeed: number;
   setPlaybackSpeed: (speed: number) => void;
   routesCount: number;
-  waypoints: Waypoint[];
-  onSelectWaypoint: (waypoint: Waypoint) => void;
-  activeWaypoint: Waypoint | null;
+  previewNodes: KeyNode[];
+  nodePositions: Array<{ node: KeyNode; position: number }>;
+  onSelectNode: (node: KeyNode) => void;
+  activeNode: KeyNode | null;
 }
 
 export default function Timeline({
@@ -23,42 +24,17 @@ export default function Timeline({
   playbackSpeed,
   setPlaybackSpeed,
   routesCount,
-  waypoints,
-  onSelectWaypoint,
-  activeWaypoint,
+  previewNodes,
+  nodePositions,
+  onSelectNode,
+  activeNode,
 }: TimelineProps) {
-
-  // Calculate distinct days
-  const days = useMemo(() => {
-    const list: number[] = [];
-    waypoints.forEach(wp => {
-      if (!list.includes(wp.day)) {
-        list.push(wp.day);
-      }
-    });
-    return list.sort((a, b) => a - b);
-  }, [waypoints]);
-
-  // Map each waypoint's position relative to the routes array length for visualization on the slider
-  const markerPositions = useMemo(() => {
-    if (routesCount <= 1) return [];
-    
-    return waypoints.map((wp) => {
-      // Find the closest coordinate in the routes array
-      let closestIdx = 0;
-      let minDistance = Infinity;
-      
-      const [wLng, wLat] = wp.coordinate;
-      
-      return {
-        waypoint: wp,
-        // Approximate position is mapped linearly or based on relative waypoint indexing
-        position: wp.distanceFromStart !== undefined && waypoints[waypoints.length - 1].distanceFromStart 
-          ? (wp.distanceFromStart / waypoints[waypoints.length - 1].distanceFromStart!) * (routesCount - 1)
-          : (waypoints.indexOf(wp) / (waypoints.length - 1)) * (routesCount - 1)
-      };
-    });
-  }, [waypoints, routesCount]);
+  const days = React.useMemo(() => {
+    const list = previewNodes
+      .map((node) => node.day)
+      .filter((day): day is number => typeof day === 'number');
+    return Array.from(new Set(list)).sort((a, b) => a - b);
+  }, [previewNodes]);
 
   const handleScrubberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onProgressChange(parseFloat(e.target.value));
@@ -69,45 +45,41 @@ export default function Timeline({
     onProgressChange(0);
   };
 
-  const currentPercent = (currentProgress / Math.max(1, routesCount - 1)) * 100;
+  const currentPercent = routesCount > 1 ? (currentProgress / Math.max(1, routesCount - 1)) * 100 : 0;
 
-  // Find current waypoint based on closest progression
-  const currentApproximatedWaypoint = useMemo(() => {
-    if (markerPositions.length === 0) return null;
-    let closest = markerPositions[0];
+  const playbackNode = React.useMemo(() => {
+    if (nodePositions.length === 0) return null;
+
+    let closest = nodePositions[0];
     let minDiff = Infinity;
-    
-    markerPositions.forEach(mp => {
-      const diff = Math.abs(mp.position - currentProgress);
+
+    nodePositions.forEach((entry) => {
+      const diff = Math.abs(entry.position - currentProgress);
       if (diff < minDiff) {
         minDiff = diff;
-        closest = mp;
+        closest = entry;
       }
     });
-    
-    return closest.waypoint;
-  }, [markerPositions, currentProgress]);
 
-  // Get index of active day depending on current waypoint
-  const currentDay = currentApproximatedWaypoint ? currentApproximatedWaypoint.day : 1;
+    return closest.node;
+  }, [nodePositions, currentProgress]);
 
-  // Jump to specific Day (first waypoint of that day)
+  const currentDay = playbackNode?.day || activeNode?.day || 1;
+
   const jumpToDay = (dayNum: number) => {
-    const dayWps = waypoints.filter(wp => wp.day === dayNum);
-    if (dayWps.length > 0) {
-      onSelectWaypoint(dayWps[0]);
+    const targetNode = previewNodes.find((node) => node.day === dayNum);
+    if (targetNode) {
+      onSelectNode(targetNode);
     }
   };
 
   return (
-    <div className="bg-slate-900/90 border-t border-slate-800 p-4 md:px-8 md:py-5 flex flex-col gap-4 backdrop-blur-md text-slate-100 shrink-0 select-none">
-      {/* Upper bar: Day Selector & Stats HUD */}
+    <div className="bg-slate-900/92 border-t border-slate-800 p-4 md:px-8 md:py-5 flex flex-col gap-4 backdrop-blur-md text-slate-100 shrink-0 select-none">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-        {/* Days Badges */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
           <span className="text-xs text-slate-400 font-medium whitespace-nowrap flex items-center gap-1 mr-1">
             <Calendar size={13} className="text-slate-500" />
-            <span>日程天数:</span>
+            <span>节点日程:</span>
           </span>
           {days.map((dayNum) => (
             <button
@@ -125,13 +97,12 @@ export default function Timeline({
           ))}
         </div>
 
-        {/* HUD Stats */}
         <div className="flex items-center gap-4 text-xs font-mono text-slate-400 self-end md:self-auto bg-slate-950/40 px-3 py-1.5 rounded border border-slate-800/40">
           <div className="flex items-center gap-1.5">
             <Navigation size={12} className="text-emerald-400" />
-            <span>当前位置:</span>
+            <span>当前节点:</span>
             <span className="text-slate-200 font-medium">
-              {currentApproximatedWaypoint ? currentApproximatedWaypoint.name : '轨迹行驶中...'}
+              {playbackNode ? playbackNode.name : '等待路线数据...'}
             </span>
           </div>
           <div className="h-3 w-px bg-slate-800" />
@@ -142,18 +113,11 @@ export default function Timeline({
         </div>
       </div>
 
-      {/* Center bar: Scrubber & Wave Tick Marks */}
       <div className="relative mt-2">
-        {/* Track / Waypoint dots over the slider */}
         <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1 bg-slate-800 rounded-full overflow-hidden pointer-events-none">
-          {/* Active progress track */}
-          <div 
-            className="h-full bg-emerald-500/80 transition-all duration-75"
-            style={{ width: `${currentPercent}%` }}
-          />
+          <div className="h-full bg-emerald-500/80 transition-all duration-75" style={{ width: `${currentPercent}%` }} />
         </div>
 
-        {/* Input slider */}
         <input
           id="timeline-scrubber"
           type="range"
@@ -163,42 +127,36 @@ export default function Timeline({
           value={currentProgress}
           onChange={handleScrubberChange}
           className="relative w-full h-6 appearance-none bg-transparent cursor-pointer focus:outline-none z-10 accent-emerald-500 hover:accent-emerald-400"
-          style={{
-            // Clean custom thumbs styling with traditional tailwind overrides or direct style configs
-          }}
         />
 
-        {/* Waypoint ticks on the timeline */}
         <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 pointer-events-none">
-          {markerPositions.map(({ waypoint, position }) => {
-            const percent = (position / Math.max(1, routesCount - 1)) * 100;
+          {nodePositions.map(({ node, position }) => {
+            const percent = routesCount > 1 ? (position / Math.max(1, routesCount - 1)) * 100 : 0;
             const isVisited = position <= currentProgress;
-            const isCurrentlySelected = activeWaypoint?.id === waypoint.id;
-            
+            const isCurrentlySelected = activeNode?.id === node.id;
+
             return (
               <button
-                id={`timeline-tick-${waypoint.id}`}
-                key={waypoint.id}
+                id={`timeline-tick-${node.id}`}
+                key={node.id}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onSelectWaypoint(waypoint);
+                  onSelectNode(node);
                 }}
                 className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto group focus:outline-none z-20"
                 style={{ left: `${percent}%` }}
-                title={`${waypoint.name} (Day ${waypoint.day})`}
+                title={node.name}
               >
-                {/* Tick dot */}
                 <span className={`block w-3.5 h-3.5 rounded-full border-2 transition-all shadow-md ${
                   isCurrentlySelected
                     ? 'bg-red-500 border-white scale-125 ring-2 ring-red-500/30'
-                    : isVisited 
-                    ? 'bg-emerald-400 border-slate-900 group-hover:bg-emerald-300' 
+                    : isVisited
+                    ? 'bg-emerald-400 border-slate-900 group-hover:bg-emerald-300'
                     : 'bg-slate-600 border-slate-900 group-hover:bg-slate-400'
                 }`} />
 
-                {/* Popover/Tooltip */}
-                <span className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-950 font-sans text-[10px] text-slate-200 px-2 py-1 rounded shadow-lg border border-slate-800 opacity-0 group-hover:opacity-100 transition-opacity-duration whitespace-nowrap pointer-events-none transform scale-95 group-hover:scale-100 transition-all origin-bottom">
-                  <span className="font-semibold text-emerald-400">Day {waypoint.day}</span> {waypoint.name}
+                <span className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-950 font-sans text-[10px] text-slate-200 px-2 py-1 rounded shadow-lg border border-slate-800 opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none transform scale-95 group-hover:scale-100 transition-all origin-bottom">
+                  <span className="font-semibold text-emerald-400">Day {node.day || '-'}</span> {node.name}
                 </span>
               </button>
             );
@@ -206,19 +164,17 @@ export default function Timeline({
         </div>
       </div>
 
-      {/* Bottom bar: Controls list */}
       <div className="flex items-center justify-between mt-1">
-        {/* Playback Controls */}
         <div className="flex items-center gap-3">
           <button
             id="btn-play-pause"
             onClick={() => setIsPlaying(!isPlaying)}
             className={`p-2.5 rounded-full text-slate-950 transition hover:scale-105 shadow ${
-              isPlaying 
-                ? 'bg-amber-400 hover:bg-amber-300 ring-4 ring-amber-400/20' 
+              isPlaying
+                ? 'bg-amber-400 hover:bg-amber-300 ring-4 ring-amber-400/20'
                 : 'bg-emerald-400 hover:bg-emerald-300 ring-4 ring-emerald-400/20'
             }`}
-            title={isPlaying ? "暂停动画" : "播放轨迹动画"}
+            title={isPlaying ? '暂停动画' : '播放轨迹动画'}
           >
             {isPlaying ? <Pause size={18} fill="#020617" /> : <Play size={18} fill="#020617" />}
           </button>
@@ -233,13 +189,11 @@ export default function Timeline({
           </button>
 
           <div className="text-xs text-slate-400 hidden sm:block">
-            {isPlaying ? '路线动画播放中...' : '路线动画已暂停'}
+            {isPlaying ? '关键节点回放进行中...' : '关键节点回放已暂停'}
           </div>
         </div>
 
-        {/* Speed Controls */}
         <div className="flex items-center gap-1.5 bg-slate-950/60 p-1 rounded-lg border border-slate-850">
-          <span className="text-[10px] uppercase tracking-wider text-slate-500 px-1.5 font-semibold font-mono hidden hover:flex">SPEED:</span>
           {[0.5, 1, 3, 5].map((speed) => (
             <button
               id={`speed-btn-${speed}`}

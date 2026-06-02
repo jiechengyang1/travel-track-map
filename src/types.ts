@@ -1,25 +1,45 @@
-export interface Photo {
-  url: string;
+export type Coordinate = [number, number];
+
+export type SegmentStatus = 'planned' | 'traveled' | 'skipped';
+export type NodeKind = 'start' | 'end' | 'key';
+export type MediaType = 'photo' | 'video' | 'note';
+
+export interface MediaMemory {
+  id: string;
+  type: MediaType;
   title: string;
   description?: string;
+  url?: string;
+  thumbnailUrl?: string;
+  text?: string;
   takenAt?: string;
+  coordinate: Coordinate;
   locationName?: string;
-  camera?: string;
-  coordinates?: [number, number];
+  keyNodeId?: string;
+  day?: number;
+  durationMs?: number;
 }
 
-export interface Waypoint {
+export interface KeyNode {
   id: string;
   name: string;
-  day: number;
-  time: string;
-  coordinate: [number, number]; // [lng, lat]
-  description: string;
-  category: 'scenic' | 'dining' | 'hotel' | 'transit';
-  rating?: number;
-  photos: Photo[];
-  elevation?: number; // Optional elevation in meters
-  distanceFromStart?: number; // Optional distance in km
+  coordinate: Coordinate;
+  kind: NodeKind;
+  highlight?: string;
+  roadLabel?: string;
+  day?: number;
+  mediaIds: string[];
+}
+
+export interface RouteSegment {
+  id: string;
+  name?: string;
+  roadName?: string;
+  status: SegmentStatus;
+  path: Coordinate[];
+  startNodeId?: string;
+  endNodeId?: string;
+  day?: number;
 }
 
 export interface TripData {
@@ -28,6 +48,8 @@ export interface TripData {
   endDate: string;
   totalDistance: string;
   description: string;
-  routes: Array<[number, number]>; // list of [lng, lat] points tracing the actual path
-  waypoints: Waypoint[];
+  roadName: string;
+  previewNodes: KeyNode[];
+  segments: RouteSegment[];
+  mediaMemories: MediaMemory[];
 }
