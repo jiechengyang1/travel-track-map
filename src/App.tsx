@@ -50,30 +50,19 @@ export default function App() {
 
   const segmentStatuses = useMemo(() => {
     const statusMap = new Map<string, 'planned' | 'traveled' | 'skipped'>();
-    let cursor = 0;
 
-    tripData.segments.forEach((segment, index) => {
-      const pointsInFlatRoute = index === 0 ? segment.path.length : Math.max(segment.path.length - 1, 0);
-      const segmentStart = cursor;
-      const segmentEnd = Math.max(segmentStart, cursor + pointsInFlatRoute - 1);
-      const hasEnteredSegment = currentProgress >= segmentStart;
-      const hasCompletedSegment = currentProgress >= segmentEnd;
-
+    tripData.segments.forEach((segment) => {
       if (segment.status === 'skipped') {
         statusMap.set(segment.id, 'skipped');
-      } else if (segment.status === 'traveled' || hasCompletedSegment) {
-        statusMap.set(segment.id, 'traveled');
-      } else if (hasEnteredSegment) {
+      } else if (segment.status === 'traveled') {
         statusMap.set(segment.id, 'traveled');
       } else {
         statusMap.set(segment.id, 'planned');
       }
-
-      cursor += pointsInFlatRoute;
     });
 
     return statusMap;
-  }, [tripData.segments, currentProgress]);
+  }, [tripData.segments]);
 
   const playbackNode = useMemo(() => {
     if (nodePositions.length === 0) return null;

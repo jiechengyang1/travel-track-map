@@ -315,13 +315,18 @@ export default function MapContainer({
     };
   }, [mapLoaded, currentMapStyle]);
 
-  // Update overlays and traveler position when data changes
+  // Update overlays only when data changes (not on every animation frame)
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !window.AMap) return;
-
     drawSegments();
     setupNodeMarkers();
+  }, [tripData, segmentStatuses, flattenedRoute, drawSegments, setupNodeMarkers]);
+
+  // Update traveler marker position — runs at animation frame rate, only moves the marker
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !window.AMap) return;
 
     if (!vehicleMarkerRef.current) {
       const vEl = document.createElement('div');
@@ -357,7 +362,7 @@ export default function MapContainer({
         lastFollowCenterRef.current = travelerCoord;
       }
     }
-  }, [travelerCoord, followVehicle, tripData, segmentStatuses, flattenedRoute, drawSegments, setupNodeMarkers]);
+  }, [travelerCoord, followVehicle]);
 
   // Satellite layer toggle
   useEffect(() => {
