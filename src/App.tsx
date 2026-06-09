@@ -5,8 +5,10 @@ import { interpolateRouteCoordinate, geoDistanceMeters } from './utils/routePlay
 import { defaultTrip } from './data/defaultTrip';
 import MapContainer from './components/MapContainer';
 import Timeline from './components/Timeline';
-import PhotoLightbox from './components/PhotoLightbox';
+import NodeMediaPanel from './components/NodeMediaPanel';
 import DataController from './components/DataController';
+
+const PLAYBACK_PREPARE_TIMEOUT_MS = 260;
 
 export default function App() {
   const [tripData, setTripData] = useState<TripData>(defaultTrip);
@@ -14,20 +16,24 @@ export default function App() {
 
   const [currentProgress, setCurrentProgress] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [isPreparingPlayback, setIsPreparingPlayback] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
 
   const [activeNode, setActiveNode] = useState<KeyNode | null>(null);
-  const [activePhoto, setActivePhoto] = useState<MediaMemory | null>(null);
-  const [activePhotoGroup, setActivePhotoGroup] = useState<MediaMemory[]>([]);
+  const [selectedMediaId, setSelectedMediaId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'map' | 'node-media'>('map');
   const [autoPlaybackNodeId, setAutoPlaybackNodeId] = useState<string | null>(null);
   const [mediaQueue, setMediaQueue] = useState<MediaMemory[]>([]);
   const [mediaQueueIndex, setMediaQueueIndex] = useState(0);
   const [isImporterOpen, setIsImporterOpen] = useState<boolean>(false);
+  const [isImmersiveMapMode, setIsImmersiveMapMode] = useState<boolean>(false);
+  const [isPageHovered, setIsPageHovered] = useState<boolean>(false);
   const autoPlayedNodeIdsRef = useRef<Set<string>>(new Set());
 
   const flattenedRoute = useMemo(() => {
-    return tripData.segments.flatMap((segment, index) => {
+    const validSegments = tripData.segments.filter((segment) => segment.path.length >= 2);
+
+    return validSegments.flatMap((segment, index) => {
       if (index === 0) return segment.path;
       return segment.path.slice(1);
     });
@@ -48,13 +54,30 @@ export default function App() {
     }));
   }, [tripData.previewNodes, totalRoutePoints]);
 
+  const segmentProgressRanges = useMemo(() => {
+    let cursor = 0;
+
+    return tripData.segments.map((segment) => {
+      const segmentLength = Math.max(0, segment.path.length - 1);
+      const startProgress = cursor;
+      const endProgress = cursor + segmentLength;
+      cursor = endProgress;
+
+      return {
+        segment,
+        startProgress,
+        endProgress,
+      };
+    });
+  }, [tripData.segments]);
+
   const segmentStatuses = useMemo(() => {
     const statusMap = new Map<string, 'planned' | 'traveled' | 'skipped'>();
 
-    tripData.segments.forEach((segment) => {
+    segmentProgressRanges.forEach(({ segment, endProgress }) => {
       if (segment.status === 'skipped') {
         statusMap.set(segment.id, 'skipped');
-      } else if (segment.status === 'traveled') {
+      } else if (currentProgress >= endProgress) {
         statusMap.set(segment.id, 'traveled');
       } else {
         statusMap.set(segment.id, 'planned');
@@ -62,7 +85,30 @@ export default function App() {
     });
 
     return statusMap;
-  }, [tripData.segments]);
+  }, [segmentProgressRanges, currentProgress]);
+
+  const activeSegmentProgress = useMemo(() => {
+    for (const { segment, startProgress, endProgress } of segmentProgressRanges) {
+      if (segment.status === 'skipped') continue;
+      if (segment.path.length < 2) continue;
+      if (currentProgress < startProgress || currentProgress >= endProgress) continue;
+
+      return {
+        segmentId: segment.id,
+        progress: currentProgress - startProgress,
+      };
+    }
+
+    return null;
+  }, [segmentProgressRanges, currentProgress]);
+
+  const passedNodeIds = useMemo(() => {
+    return new Set(
+      nodePositions
+        .filter(({ position }) => currentProgress >= position)
+        .map(({ node }) => node.id),
+    );
+  }, [nodePositions, currentProgress]);
 
   const playbackNode = useMemo(() => {
     if (nodePositions.length === 0) return null;
@@ -81,6 +127,14 @@ export default function App() {
     return closest.node;
   }, [nodePositions, currentProgress]);
 
+  const currentPlaybackDay = useMemo(() => {
+    if (currentProgress <= 0) {
+      return tripData.previewNodes[0]?.day ?? activeNode?.day ?? 1;
+    }
+
+    return playbackNode?.day ?? activeNode?.day ?? tripData.previewNodes[0]?.day ?? 1;
+  }, [currentProgress, playbackNode, activeNode, tripData.previewNodes]);
+
   const travelerCoord = useMemo(() => {
     return interpolateRouteCoordinate(flattenedRoute, currentProgress);
   }, [flattenedRoute, currentProgress]);
@@ -91,6 +145,30 @@ export default function App() {
   }, [tripData.mediaMemories, activeNode]);
 
   const currentAutoMedia = mediaQueue[mediaQueueIndex] || null;
+
+  const activePanelMedia = useMemo(() => {
+    if (currentAutoMedia && currentAutoMedia.keyNodeId === activeNode?.id) {
+      return currentAutoMedia;
+    }
+
+    if (!selectedMediaId) {
+      return activeNodeMemories[0] || null;
+    }
+
+    return activeNodeMemories.find((memory) => memory.id === selectedMediaId) || activeNodeMemories[0] || null;
+  }, [currentAutoMedia, activeNode, selectedMediaId, activeNodeMemories]);
+
+  const activePanelIndex = useMemo(() => {
+    if (!activePanelMedia) return -1;
+    return activeNodeMemories.findIndex((memory) => memory.id === activePanelMedia.id);
+  }, [activeNodeMemories, activePanelMedia]);
+
+  const hasPrevPanelMedia = activePanelIndex > 0;
+  const hasNextPanelMedia = activePanelIndex !== -1 && activePanelIndex < activeNodeMemories.length - 1;
+
+  const shouldHideTimeline = !isPageHovered;
+  const shouldHideRoutePreview = isImmersiveMapMode;
+  const shouldHideToolbar = isImmersiveMapMode;
 
   useEffect(() => {
     const fetchTripJson = async () => {
@@ -120,7 +198,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isPlaying || totalRoutePoints <= 1 || viewMode !== 'map') return;
+    if (!isPlaying || totalRoutePoints <= 1) return;
 
     let animationFrameId: number;
     let lastTime = performance.now();
@@ -145,7 +223,7 @@ export default function App() {
 
     animationFrameId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [isPlaying, playbackSpeed, totalRoutePoints, viewMode]);
+  }, [isPlaying, playbackSpeed, totalRoutePoints]);
 
   useEffect(() => {
     if (playbackNode) {
@@ -160,7 +238,10 @@ export default function App() {
   }, [currentProgress]);
 
   const getMediaAutoAdvanceMs = useCallback((memory: MediaMemory) => {
-    if (memory.type === 'photo') return 1500;
+    if (memory.type === 'photo') {
+      const minPhotoMs = Math.max(1500, memory.durationMs || 0);
+      return minPhotoMs;
+    }
     if (memory.type === 'video') return memory.durationMs || undefined;
 
     const textLength = (memory.text || memory.description || '').trim().length;
@@ -169,13 +250,16 @@ export default function App() {
   }, []);
 
   const finishNodeAutoPlayback = useCallback(() => {
-    setActivePhoto(null);
-    setActivePhotoGroup([]);
     setMediaQueue([]);
     setMediaQueueIndex(0);
     setAutoPlaybackNodeId(null);
-    setViewMode('map');
     setIsPlaying(true);
+  }, []);
+
+  const beginPlayback = useCallback(() => {
+    setIsImmersiveMapMode(true);
+    setIsPreparingPlayback(true);
+    setIsPlaying(false);
   }, []);
 
   const handleAutoAdvance = useCallback(() => {
@@ -192,13 +276,7 @@ export default function App() {
   }, [mediaQueue.length, finishNodeAutoPlayback]);
 
   useEffect(() => {
-    if (!currentAutoMedia) return;
-    setActivePhoto(currentAutoMedia);
-    setActivePhotoGroup(mediaQueue);
-  }, [currentAutoMedia, mediaQueue]);
-
-  useEffect(() => {
-    if (!isPlaying || viewMode !== 'map' || tripData.previewNodes.length === 0) return;
+    if (!isPlaying || tripData.previewNodes.length === 0) return;
 
     const thresholdMeters = 250;
     const nearestNode = tripData.previewNodes.reduce<{ node: KeyNode | null; distance: number }>((closest, node) => {
@@ -226,27 +304,30 @@ export default function App() {
     autoPlayedNodeIdsRef.current.add(node.id);
     setIsPlaying(false);
     setActiveNode(node);
+    setSelectedMediaId(queue[0].id);
     setAutoPlaybackNodeId(node.id);
     setMediaQueue(queue);
     setMediaQueueIndex(0);
-    setViewMode('node-media');
-  }, [travelerCoord, isPlaying, tripData.previewNodes, tripData.mediaMemories, viewMode]);
+  }, [travelerCoord, isPlaying, tripData.previewNodes, tripData.mediaMemories]);
 
   const handleSelectNode = useCallback((node: KeyNode) => {
+    setIsImmersiveMapMode(true);
     setActiveNode(node);
+    const nodeMemories = tripData.mediaMemories.filter((memory) => memory.keyNodeId === node.id);
+    setSelectedMediaId(nodeMemories[0]?.id || null);
     const nodeIndex = nodePositions.find((entry) => entry.node.id === node.id)?.position;
     if (nodeIndex !== undefined) {
       setCurrentProgress(nodeIndex);
     }
-  }, [nodePositions]);
+  }, [nodePositions, tripData.mediaMemories]);
 
   const handleUpdateTripData = useCallback((newData: TripData) => {
     setTripData(newData);
     setCurrentProgress(0);
     setIsPlaying(false);
     setViewMode('map');
-    setActivePhoto(null);
-    setActivePhotoGroup([]);
+    setIsImmersiveMapMode(false);
+    setSelectedMediaId(null);
     setMediaQueue([]);
     setMediaQueueIndex(0);
     setAutoPlaybackNodeId(null);
@@ -259,53 +340,91 @@ export default function App() {
   }, []);
 
   const handlePhotoClick = useCallback((memory: MediaMemory) => {
-    const related = tripData.mediaMemories.filter((item) => item.keyNodeId === memory.keyNodeId && item.type === 'photo');
-    setActivePhoto(memory);
-    setActivePhotoGroup(related.length > 0 ? related : [memory]);
-  }, [tripData.mediaMemories]);
+    setSelectedMediaId(memory.id);
+  }, []);
 
-  const activePhotoIndex = useMemo(() => {
-    if (!activePhoto) return -1;
-    return activePhotoGroup.findIndex((memory) => memory.id === activePhoto.id);
-  }, [activePhotoGroup, activePhoto]);
-
-  const hasPrevPhoto = activePhotoIndex > 0;
-  const hasNextPhoto = activePhotoIndex !== -1 && activePhotoIndex < activePhotoGroup.length - 1;
-
-  const handlePrevPhoto = useCallback(() => {
-    if (hasPrevPhoto) {
-      setActivePhoto(activePhotoGroup[activePhotoIndex - 1]);
+  const handlePrevPanelMedia = useCallback(() => {
+    if (hasPrevPanelMedia && activePanelIndex > 0) {
+      setSelectedMediaId(activeNodeMemories[activePanelIndex - 1].id);
     }
-  }, [hasPrevPhoto, activePhotoGroup, activePhotoIndex]);
+  }, [hasPrevPanelMedia, activeNodeMemories, activePanelIndex]);
 
-  const handleNextPhoto = useCallback(() => {
-    if (hasNextPhoto) {
-      setActivePhoto(activePhotoGroup[activePhotoIndex + 1]);
+  const handleNextPanelMedia = useCallback(() => {
+    if (hasNextPanelMedia && activePanelIndex !== -1) {
+      setSelectedMediaId(activeNodeMemories[activePanelIndex + 1].id);
     }
-  }, [hasNextPhoto, activePhotoGroup, activePhotoIndex]);
+  }, [hasNextPanelMedia, activeNodeMemories, activePanelIndex]);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-slate-950 overflow-hidden font-sans select-none antialiased">
-      <div className={`flex-1 flex flex-col h-full relative overflow-hidden transition-all duration-700 ease-out ${
-        viewMode === 'node-media'
-          ? 'opacity-0 pointer-events-none scale-[0.945] blur-[2px] brightness-[0.72]'
-          : 'opacity-100 scale-100 blur-0 brightness-100'
-      }`}>
-        <MapContainer
-          tripData={tripData}
-          flattenedRoute={flattenedRoute}
-          currentProgress={currentProgress}
-          segmentStatuses={segmentStatuses}
-          activeNode={activeNode}
-          onSelectNode={handleSelectNode}
-          dataLoadedSource={dataLoadedSource}
-        />
+    <div
+      className="flex flex-col h-screen w-screen bg-slate-950 overflow-hidden font-sans select-none antialiased"
+      onMouseEnter={() => setIsPageHovered(true)}
+      onMouseLeave={() => setIsPageHovered(false)}
+    >
+      <div className="flex-1 flex h-full relative overflow-hidden transition-all duration-700 ease-out opacity-100 scale-100 blur-0 brightness-100">
+        <div className="flex-1 min-w-0 h-full flex flex-col">
+          <MapContainer
+            tripData={tripData}
+            flattenedRoute={flattenedRoute}
+            currentProgress={currentProgress}
+            segmentStatuses={segmentStatuses}
+            passedNodeIds={passedNodeIds}
+            activeNode={activeNode}
+            activeSegmentProgress={activeSegmentProgress}
+            currentPlaybackDay={currentPlaybackDay}
+            isPlaying={isPlaying}
+            isPreparingPlayback={isPreparingPlayback}
+            hideRoutePreview={shouldHideRoutePreview}
+            hideToolbar={shouldHideToolbar}
+            onPlaybackFocusReady={() => {
+              setIsPreparingPlayback(false);
+              setIsPlaying(true);
+            }}
+            onSelectNode={handleSelectNode}
+            dataLoadedSource={dataLoadedSource}
+          />
+        </div>
 
+        <div className="w-[420px] max-w-[38vw] min-w-[360px] h-full border-l border-slate-800 bg-slate-950/92 backdrop-blur-xl shadow-2xl">
+          <NodeMediaPanel
+            node={activeNode}
+            memories={activeNodeMemories}
+            activeMedia={activePanelMedia}
+            activeIndex={activePanelIndex}
+            autoPlay={Boolean(currentAutoMedia && currentAutoMedia.keyNodeId === activeNode?.id)}
+            autoAdvanceMs={currentAutoMedia ? getMediaAutoAdvanceMs(currentAutoMedia) : undefined}
+            onAutoAdvance={currentAutoMedia ? handleAutoAdvance : undefined}
+            onSelectMedia={handlePhotoClick}
+            onPrev={handlePrevPanelMedia}
+            onNext={handleNextPanelMedia}
+            hasPrev={hasPrevPanelMedia}
+            hasNext={hasNextPanelMedia}
+          />
+        </div>
+      </div>
+
+      <div
+        className={`transition-all duration-500 ease-out overflow-hidden ${
+          shouldHideTimeline
+            ? 'max-h-0 opacity-0 translate-y-6 pointer-events-none'
+            : 'max-h-64 opacity-100 translate-y-0 pointer-events-auto'
+        }`}
+      >
         <Timeline
           currentProgress={currentProgress}
-          onProgressChange={setCurrentProgress}
+          onProgressChange={(progress) => {
+            setIsImmersiveMapMode(true);
+            setCurrentProgress(progress);
+          }}
           isPlaying={isPlaying}
-          setIsPlaying={setIsPlaying}
+          setIsPlaying={(playing) => {
+            if (playing) {
+              beginPlayback();
+              return;
+            }
+            setIsPreparingPlayback(false);
+            setIsPlaying(false);
+          }}
           playbackSpeed={playbackSpeed}
           setPlaybackSpeed={setPlaybackSpeed}
           routesCount={totalRoutePoints}
@@ -313,72 +432,12 @@ export default function App() {
           nodePositions={nodePositions}
           onSelectNode={handleSelectNode}
           activeNode={activeNode}
+          currentPlaybackDay={currentPlaybackDay}
         />
       </div>
 
-      <PhotoLightbox
-        photo={activePhoto}
-        onClose={() => {
-          if (viewMode === 'node-media') {
-            finishNodeAutoPlayback();
-            return;
-          }
-          setActivePhoto(null);
-          setActivePhotoGroup([]);
-        }}
-        onPrev={handlePrevPhoto}
-        onNext={handleNextPhoto}
-        hasPrev={hasPrevPhoto}
-        hasNext={hasNextPhoto}
-        autoPlay={viewMode === 'node-media'}
-        onAutoAdvance={handleAutoAdvance}
-        autoAdvanceMs={currentAutoMedia ? getMediaAutoAdvanceMs(currentAutoMedia) : undefined}
-        hideManualNav={viewMode === 'node-media'}
-      />
-
-      {viewMode === 'map' && activeNode && activeNodeMemories.length > 0 && (
-        <div className="absolute top-20 right-4 z-30 w-[340px] max-w-[calc(100vw-2rem)] bg-slate-950/90 border border-slate-800 rounded-2xl shadow-2xl backdrop-blur-md overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-800">
-            <div className="text-[10px] uppercase tracking-[0.2em] text-emerald-400 font-mono">节点内容预览</div>
-            <div className="mt-1 text-sm font-semibold text-white">{activeNode.name}</div>
-            {activeNode.highlight && (
-              <div className="mt-1 text-xs text-slate-400">{activeNode.highlight}</div>
-            )}
-          </div>
-          <div className="max-h-[55vh] overflow-y-auto p-3 space-y-3">
-            {activeNodeMemories.map((memory) => (
-              <button
-                key={memory.id}
-                onClick={() => handlePhotoClick(memory)}
-                className="w-full text-left rounded-xl border border-slate-800 bg-slate-900/70 hover:bg-slate-900 transition overflow-hidden"
-              >
-                {memory.type === 'photo' && memory.url && (
-                  <img src={memory.url} alt={memory.title} className="w-full h-36 object-cover" referrerPolicy="no-referrer" />
-                )}
-                {memory.type === 'video' && (
-                  <div className="w-full h-36 bg-slate-900 flex items-center justify-center text-slate-300 text-sm">
-                    ▶ 视频预留位
-                  </div>
-                )}
-                {memory.type === 'note' && (
-                  <div className="p-4 text-sm text-slate-300 leading-relaxed line-clamp-5">
-                    {memory.text || memory.description || '旅行文字记录'}
-                  </div>
-                )}
-                <div className="p-3">
-                  <div className="text-sm font-medium text-white">{memory.title}</div>
-                  {memory.description && memory.type !== 'note' && (
-                    <div className="mt-1 text-xs text-slate-400 line-clamp-2">{memory.description}</div>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       <AnimatePresence>
-        {viewMode === 'node-media' && currentAutoMedia && autoPlaybackNodeId && (
+        {false && viewMode === 'node-media' && currentAutoMedia && autoPlaybackNodeId && (
           <>
             <motion.div
               initial={{ opacity: 0 }}
@@ -413,7 +472,11 @@ export default function App() {
 
       <button
         onClick={() => setIsImporterOpen(true)}
-        className="absolute top-4 right-4 z-40 px-3 py-2 rounded-full bg-slate-900/85 hover:bg-slate-800 text-slate-100 border border-slate-700 shadow-lg text-xs font-semibold backdrop-blur"
+        className={`absolute top-4 right-4 z-40 px-3 py-2 rounded-full bg-slate-900/85 hover:bg-slate-800 text-slate-100 border border-slate-700 shadow-lg text-xs font-semibold backdrop-blur transition-all duration-300 ease-out ${
+          shouldHideToolbar
+            ? 'opacity-0 -translate-y-3 pointer-events-none'
+            : 'opacity-100 translate-y-0 pointer-events-auto'
+        }`}
       >
         打开路线数据控制台
       </button>

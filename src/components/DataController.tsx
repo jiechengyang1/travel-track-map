@@ -9,6 +9,60 @@ interface DataControllerProps {
   onUpdateTripData: (newData: TripData) => void;
 }
 
+function isValidCoordinate(point: unknown): point is [number, number] {
+  return Array.isArray(point)
+    && point.length >= 2
+    && Number.isFinite(Number(point[0]))
+    && Number.isFinite(Number(point[1]));
+}
+
+function normalizeCoordinate(point: unknown, fallback: [number, number] = [100, 27]): [number, number] {
+  if (!isValidCoordinate(point)) return [...fallback];
+  return [Number(point[0]), Number(point[1])];
+}
+
+function coordinatesEqual(a: [number, number], b: [number, number]) {
+  return a[0] === b[0] && a[1] === b[1];
+}
+
+function dedupeConsecutiveCoordinates(path: [number, number][]) {
+  return path.filter((point, index) => {
+    if (index === 0) return true;
+    return !coordinatesEqual(point, path[index - 1]);
+  });
+}
+
+function normalizeSegmentPath(
+  path: unknown,
+  startCoord?: [number, number],
+  endCoord?: [number, number],
+): [number, number][] {
+  const cleaned = Array.isArray(path)
+    ? path
+        .filter((point): point is [number, number] => isValidCoordinate(point))
+        .map((point) => normalizeCoordinate(point))
+    : [];
+
+  const normalizedStart = startCoord ? normalizeCoordinate(startCoord) : cleaned[0];
+  const normalizedEnd = endCoord
+    ? normalizeCoordinate(endCoord, normalizedStart || [100, 27])
+    : cleaned[cleaned.length - 1];
+
+  const deduped = dedupeConsecutiveCoordinates(cleaned);
+  const body = deduped.filter((point, index) => {
+    if (index === 0 || index === deduped.length - 1) return false;
+    if (normalizedStart && coordinatesEqual(point, normalizedStart)) return false;
+    if (normalizedEnd && coordinatesEqual(point, normalizedEnd)) return false;
+    return true;
+  });
+
+  if (normalizedStart && normalizedEnd) {
+    return dedupeConsecutiveCoordinates([normalizedStart, ...body, normalizedEnd]);
+  }
+
+  return deduped;
+}
+
 export default function DataController({
   isOpen,
   onClose,
@@ -89,9 +143,7 @@ export default function DataController({
     const cleanedPreviewNodes: KeyNode[] = data.previewNodes.map((node: any, i: number) => ({
       id: node.id || `node-${Date.now()}-${i}`,
       name: node.name || `未命名节点 ${i + 1}`,
-      coordinate: Array.isArray(node.coordinate)
-        ? [Number(node.coordinate[0]), Number(node.coordinate[1])]
-        : [100, 27],
+      coordinate: normalizeCoordinate(node.coordinate),
       kind: node.kind === 'start' || node.kind === 'end' || node.kind === 'key' ? node.kind : 'key',
       highlight: node.highlight || undefined,
       roadLabel: node.roadLabel || undefined,
@@ -99,18 +151,28 @@ export default function DataController({
       mediaIds: Array.isArray(node.mediaIds) ? node.mediaIds : [],
     }));
 
-    const cleanedSegments: RouteSegment[] = data.segments.map((segment: any, i: number) => ({
-      id: segment.id || `segment-${Date.now()}-${i}`,
-      name: segment.name || `未命名路段 ${i + 1}`,
-      roadName: segment.roadName || data.roadName || '未命名道路',
-      status: segment.status === 'traveled' || segment.status === 'skipped' ? segment.status : 'planned',
-      path: Array.isArray(segment.path)
-        ? segment.path.map((point: any) => [Number(point[0]), Number(point[1])] as [number, number])
-        : [],
-      startNodeId: segment.startNodeId || undefined,
-      endNodeId: segment.endNodeId || undefined,
-      day: segment.day !== undefined ? Number(segment.day) : undefined,
-    }));
+    const nodeById = new Map(cleanedPreviewNodes.map((node) => [node.id, node]));
+
+    const cleanedSegments: RouteSegment[] = data.segments.map((segment: any, i: number) => {
+      const startNode = segment.startNodeId ? nodeById.get(segment.startNodeId) : undefined;
+      const endNode = segment.endNodeId ? nodeById.get(segment.endNodeId) : undefined;
+      const normalizedPath = normalizeSegmentPath(
+        segment.path,
+        startNode?.coordinate,
+        endNode?.coordinate,
+      );
+
+      return {
+        id: segment.id || `segment-${Date.now()}-${i}`,
+        name: segment.name || `未命名路段 ${i + 1}`,
+        roadName: segment.roadName || data.roadName || '未命名道路',
+        status: segment.status === 'traveled' || segment.status === 'skipped' ? segment.status : 'planned',
+        path: normalizedPath.length >= 2 ? normalizedPath : [],
+        startNodeId: startNode?.id || undefined,
+        endNodeId: endNode?.id || undefined,
+        day: segment.day !== undefined ? Number(segment.day) : undefined,
+      };
+    }).filter((segment) => segment.path.length >= 2);
 
     const cleanedMediaMemories: MediaMemory[] = Array.isArray(data.mediaMemories)
       ? data.mediaMemories.map((memory: any, i: number) => ({
@@ -122,9 +184,7 @@ export default function DataController({
           thumbnailUrl: memory.thumbnailUrl || undefined,
           text: memory.text || undefined,
           takenAt: memory.takenAt || undefined,
-          coordinate: Array.isArray(memory.coordinate)
-            ? [Number(memory.coordinate[0]), Number(memory.coordinate[1])]
-            : [100, 27],
+          coordinate: normalizeCoordinate(memory.coordinate),
           locationName: memory.locationName || undefined,
           keyNodeId: memory.keyNodeId || undefined,
           day: memory.day !== undefined ? Number(memory.day) : undefined,

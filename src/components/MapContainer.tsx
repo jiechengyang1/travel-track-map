@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { TripData, Coordinate, KeyNode, SegmentStatus } from '../types';
-import { interpolateRouteCoordinate } from '../utils/routePlayback';
+import { splitRouteAtProgress } from '../utils/routePlayback';
 import { Layers, Settings, Navigation, Compass } from 'lucide-react';
 
 interface MapContainerProps {
@@ -8,7 +8,18 @@ interface MapContainerProps {
   flattenedRoute: Coordinate[];
   currentProgress: number;
   segmentStatuses: Map<string, SegmentStatus>;
+  passedNodeIds: Set<string>;
   activeNode: KeyNode | null;
+  activeSegmentProgress: {
+    segmentId: string;
+    progress: number;
+  } | null;
+  currentPlaybackDay: number | null;
+  isPlaying: boolean;
+  isPreparingPlayback: boolean;
+  hideRoutePreview: boolean;
+  hideToolbar: boolean;
+  onPlaybackFocusReady: () => void;
   onSelectNode: (node: KeyNode) => void;
   dataLoadedSource: 'default' | 'fetched';
 }
@@ -20,12 +31,53 @@ declare global {
   }
 }
 
+const PLACE_SUFFIXES = [
+  '自治州',
+  '地区',
+  '新区',
+  '特别行政区',
+  '自治县',
+  '自治旗',
+  '市',
+  '县',
+  '区',
+  '镇',
+  '乡',
+  '村',
+  '州',
+  '盟',
+  '旗',
+];
+
+function formatNodeBadgeLabel(name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) return '地';
+
+  const withoutSuffix = PLACE_SUFFIXES.reduce((label, suffix) => {
+    if (label.length > suffix.length && label.endsWith(suffix)) {
+      return label.slice(0, -suffix.length);
+    }
+    return label;
+  }, trimmed);
+
+  const normalized = withoutSuffix || trimmed;
+  return normalized.slice(0, 1);
+}
+
 export default function MapContainer({
   tripData,
   flattenedRoute,
   currentProgress,
   segmentStatuses,
+  passedNodeIds,
   activeNode,
+  activeSegmentProgress,
+  currentPlaybackDay,
+  isPlaying,
+  isPreparingPlayback,
+  hideRoutePreview,
+  hideToolbar,
+  onPlaybackFocusReady,
   onSelectNode,
   dataLoadedSource,
 }: MapContainerProps) {
@@ -37,6 +89,9 @@ export default function MapContainer({
   const vehicleMarkerRef = useRef<any>(null);
   const satelliteLayerRef = useRef<any>(null);
   const lastFollowCenterRef = useRef<Coordinate | null>(null);
+  const hasAppliedInitialOverviewRef = useRef(false);
+  const lastFocusedPlaybackDayRef = useRef<number | null>(null);
+  const hasAppliedPlaybackZoomRef = useRef(false);
 
   const [keyInput, setKeyInput] = useState('');
   const [securityInput, setSecurityInput] = useState('');
@@ -56,8 +111,18 @@ export default function MapContainer({
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const travelerCoord = React.useMemo<Coordinate>(() => {
-    return interpolateRouteCoordinate(flattenedRoute, currentProgress);
+    return currentProgress < 0
+      ? flattenedRoute[0] || [103.9471, 30.5745]
+      : splitRouteAtProgress(flattenedRoute, currentProgress).splitPoint;
   }, [flattenedRoute, currentProgress]);
+
+  const currentDaySegments = React.useMemo(() => {
+    if (currentPlaybackDay == null) return [] as Coordinate[][];
+
+    return tripData.segments
+      .filter((segment) => segment.day === currentPlaybackDay && segment.path.length >= 2)
+      .map((segment) => segment.path);
+  }, [tripData.segments, currentPlaybackDay]);
 
   // --- Helper functions ---
 
@@ -79,40 +144,63 @@ export default function MapContainer({
 
     tripData.segments.forEach((segment) => {
       const effectiveStatus = segmentStatuses.get(segment.id) || segment.status;
-      const strokeColor = effectiveStatus === 'traveled' ? '#10b981' : '#64748b';
-      const strokeOpacity = effectiveStatus === 'traveled' ? 0.95 : 0.78;
-      const strokeStyle = effectiveStatus === 'skipped' ? 'dashed' : 'solid';
-      const strokeWeight = effectiveStatus === 'traveled' ? 5 : 4;
+      const isSkipped = effectiveStatus === 'skipped';
+      const isTraveled = effectiveStatus === 'traveled';
+      const isActiveSegment = activeSegmentProgress?.segmentId === segment.id && segment.path.length >= 2 && !isSkipped;
+      const strokeStyle = isSkipped ? 'dashed' : 'solid';
+      const strokeWeight = isTraveled ? 5 : 4;
 
-      const shadow = new window.AMap.Polyline({
-        path: segment.path,
-        strokeColor: '#020617',
-        strokeWeight: strokeWeight + 3,
-        strokeOpacity: 0.5,
-        strokeStyle,
-        lineJoin: 'round',
-        lineCap: 'round',
-      });
-      shadow.setMap(map);
+      const createShadowLine = (path: Coordinate[]) => {
+        const shadow = new window.AMap.Polyline({
+          path,
+          strokeColor: '#020617',
+          strokeWeight: strokeWeight + 3,
+          strokeOpacity: 0.5,
+          strokeStyle,
+          lineJoin: 'round',
+          lineCap: 'round',
+        });
+        shadow.setMap(map);
+        routeLineRefs.current.push(shadow);
+      };
 
-      const line = new window.AMap.Polyline({
-        path: segment.path,
-        strokeColor,
-        strokeWeight,
-        strokeOpacity,
-        strokeStyle,
-        lineJoin: 'round',
-        lineCap: 'round',
-      });
-      line.setMap(map);
+      const createLine = (path: Coordinate[], strokeColor: string, strokeOpacity: number) => {
+        const line = new window.AMap.Polyline({
+          path,
+          strokeColor,
+          strokeWeight,
+          strokeOpacity,
+          strokeStyle,
+          lineJoin: 'round',
+          lineCap: 'round',
+        });
+        line.setMap(map);
+        routeLineRefs.current.push(line);
+      };
 
-      routeLineRefs.current.push(shadow, line);
+      if (isActiveSegment) {
+        const { traveledPath, remainingPath } = splitRouteAtProgress(segment.path, activeSegmentProgress.progress);
+
+        if (traveledPath.length >= 2) {
+          createShadowLine(traveledPath);
+          createLine(traveledPath, '#10b981', 0.95);
+        }
+
+        if (remainingPath.length >= 2) {
+          createShadowLine(remainingPath);
+          createLine(remainingPath, '#64748b', 0.78);
+        }
+
+        return;
+      }
+
+      const strokeColor = isTraveled ? '#10b981' : '#64748b';
+      const strokeOpacity = isTraveled ? 0.95 : 0.78;
+
+      createShadowLine(segment.path);
+      createLine(segment.path, strokeColor, strokeOpacity);
     });
-
-    if (routeLineRefs.current.length > 0) {
-      map.setFitView(routeLineRefs.current, false, [60, 80, 60, 160]);
-    }
-  }, [tripData.segments, segmentStatuses]);
+  }, [tripData.segments, segmentStatuses, activeSegmentProgress]);
 
   const setupNodeMarkers = useCallback(() => {
     const map = mapRef.current;
@@ -123,19 +211,23 @@ export default function MapContainer({
 
     tripData.previewNodes.forEach((node) => {
       const isActive = activeNode?.id === node.id;
+      const hasPassed = passedNodeIds.has(node.id);
       const markerEl = document.createElement('div');
       markerEl.className = `route-node ${isActive ? 'active' : ''}`;
+      const badgeLabel = formatNodeBadgeLabel(node.name);
 
       const nodeColor = node.kind === 'start'
         ? 'bg-cyan-500 border-cyan-300'
         : node.kind === 'end'
         ? 'bg-rose-500 border-rose-300'
+        : hasPassed
+        ? 'bg-emerald-500 border-emerald-300'
         : 'bg-slate-700 border-slate-400';
 
       markerEl.innerHTML = `
         <div class="flex flex-col items-center justify-center transform -translate-y-2 group cursor-pointer">
-          <div class="w-6 h-6 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-white text-[10px] font-semibold ${nodeColor} ${isActive ? 'scale-110 ring-4 ring-emerald-500/20' : ''}">
-            ${node.kind === 'start' ? '起' : node.kind === 'end' ? '终' : '站'}
+          <div class="w-7 h-7 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-white text-[8px] font-semibold leading-none ${nodeColor} ${isActive ? 'scale-110 ring-4 ring-emerald-500/20' : ''}">
+            ${badgeLabel}
           </div>
           <div class="mt-1 px-2 py-0.5 rounded shadow-md bg-slate-950/90 border border-slate-800 text-[10px] text-slate-100 font-medium whitespace-nowrap">
             ${node.name}
@@ -155,7 +247,7 @@ export default function MapContainer({
       marker.setMap(map);
       nodeMarkerRefs.current.push(marker);
     });
-  }, [tripData.previewNodes, activeNode, onSelectNode]);
+  }, [tripData.previewNodes, passedNodeIds, activeNode, onSelectNode]);
 
   const setupRoadLabel = useCallback(() => {
     const map = mapRef.current;
@@ -299,9 +391,14 @@ export default function MapContainer({
     mapRef.current = map;
 
     map.on('complete', () => {
+      map.resize?.();
       drawSegments();
       setupNodeMarkers();
       setupRoadLabel();
+      if (!hasAppliedInitialOverviewRef.current && routeLineRefs.current.length > 0) {
+        map.setFitView(routeLineRefs.current, false, [60, 60, 60, 60]);
+        hasAppliedInitialOverviewRef.current = true;
+      }
     });
 
     return () => {
@@ -319,21 +416,92 @@ export default function MapContainer({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !window.AMap) return;
+    map.resize?.();
     drawSegments();
     setupNodeMarkers();
   }, [tripData, segmentStatuses, flattenedRoute, drawSegments, setupNodeMarkers]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !window.AMap || (!isPlaying && !isPreparingPlayback) || currentDaySegments.length === 0 || currentPlaybackDay == null) return;
+    if (lastFocusedPlaybackDayRef.current === currentPlaybackDay) {
+      if (isPreparingPlayback) {
+        onPlaybackFocusReady();
+      }
+      return;
+    }
+
+    const points = currentDaySegments.flat();
+    if (points.length === 0) return;
+
+    const [minLng, maxLng, minLat, maxLat] = points.reduce(
+      ([minLngAcc, maxLngAcc, minLatAcc, maxLatAcc], [lng, lat]) => [
+        Math.min(minLngAcc, lng),
+        Math.max(maxLngAcc, lng),
+        Math.min(minLatAcc, lat),
+        Math.max(maxLatAcc, lat),
+      ],
+      [Infinity, -Infinity, Infinity, -Infinity] as [number, number, number, number],
+    );
+
+    const centerLng = (minLng + maxLng) / 2;
+    const centerLat = (minLat + maxLat) / 2;
+    const lngSpan = Math.max(maxLng - minLng, 0.12);
+    const latSpan = Math.max(maxLat - minLat, 0.12);
+    const dominantSpan = Math.max(lngSpan, latSpan);
+
+    const playbackZoom = dominantSpan > 8 ? 6.1
+      : dominantSpan > 5 ? 6.8
+      : dominantSpan > 3 ? 7.6
+      : dominantSpan > 1.8 ? 8.5
+      : dominantSpan > 1 ? 9.2
+      : dominantSpan > 0.45 ? 10.1
+      : 11.2;
+
+    map.setZoom?.(playbackZoom);
+    map.setCenter([centerLng, centerLat]);
+    lastFocusedPlaybackDayRef.current = currentPlaybackDay;
+    hasAppliedPlaybackZoomRef.current = true;
+
+    if (isPreparingPlayback) {
+      window.setTimeout(() => {
+        onPlaybackFocusReady();
+      }, 160);
+    }
+  }, [isPlaying, isPreparingPlayback, currentDaySegments, currentPlaybackDay, onPlaybackFocusReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !window.AMap) return;
+
+    if (isPlaying && !hasAppliedPlaybackZoomRef.current && currentDaySegments.length === 0) {
+      const currentZoom = map.getZoom?.() ?? 6.3;
+      map.setZoom?.(Math.min(currentZoom + 1.2, 10.5));
+      hasAppliedPlaybackZoomRef.current = true;
+      return;
+    }
+
+    if (!isPlaying) {
+      hasAppliedPlaybackZoomRef.current = false;
+      lastFocusedPlaybackDayRef.current = null;
+    }
+  }, [isPlaying, currentDaySegments.length]);
 
   // Update traveler marker position — runs at animation frame rate, only moves the marker
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !window.AMap) return;
+    const travelerDayLabel = currentPlaybackDay ? `D${currentPlaybackDay}` : 'D?';
 
     if (!vehicleMarkerRef.current) {
       const vEl = document.createElement('div');
       vEl.className = 'traveler-avatar z-30 transition-all';
       vEl.innerHTML = `
-        <div class="relative flex items-center justify-center h-14 w-14">
+        <div class="relative flex flex-col items-center justify-center h-16 w-16">
           <span class="absolute inline-flex h-11 w-11 rounded-full bg-emerald-400 opacity-60 animate-ping"></span>
+          <span class="mb-1 px-2 py-0.5 rounded-full bg-slate-950/90 border border-emerald-400/30 text-[10px] font-mono font-semibold text-emerald-300 shadow-lg whitespace-nowrap">
+            ${travelerDayLabel}
+          </span>
           <span class="relative inline-flex rounded-full h-10 w-10 bg-emerald-500 border-2 border-white shadow-xl flex items-center justify-center">
             <span class="text-xl">🚗</span>
           </span>
@@ -343,11 +511,25 @@ export default function MapContainer({
       vehicleMarkerRef.current = new window.AMap.Marker({
         position: travelerCoord,
         content: vEl,
-        offset: new window.AMap.Pixel(-28, -28),
+        offset: new window.AMap.Pixel(-32, -36),
         zIndex: 100,
       });
       vehicleMarkerRef.current.setMap(map);
     } else {
+      const markerContent = vehicleMarkerRef.current.getContent?.();
+      if (markerContent) {
+        markerContent.innerHTML = `
+          <div class="relative flex flex-col items-center justify-center h-16 w-16">
+            <span class="absolute inline-flex h-11 w-11 rounded-full bg-emerald-400 opacity-60 animate-ping"></span>
+            <span class="mb-1 px-2 py-0.5 rounded-full bg-slate-950/90 border border-emerald-400/30 text-[10px] font-mono font-semibold text-emerald-300 shadow-lg whitespace-nowrap">
+              ${travelerDayLabel}
+            </span>
+            <span class="relative inline-flex rounded-full h-10 w-10 bg-emerald-500 border-2 border-white shadow-xl flex items-center justify-center">
+              <span class="text-xl">🚗</span>
+            </span>
+          </div>
+        `;
+      }
       vehicleMarkerRef.current.setPosition(travelerCoord);
     }
 
@@ -362,7 +544,7 @@ export default function MapContainer({
         lastFollowCenterRef.current = travelerCoord;
       }
     }
-  }, [travelerCoord, followVehicle]);
+  }, [travelerCoord, followVehicle, currentPlaybackDay]);
 
   // Satellite layer toggle
   useEffect(() => {
@@ -386,7 +568,11 @@ export default function MapContainer({
 
   return (
     <div className="flex-1 relative bg-slate-950 overflow-hidden h-full flex flex-col min-h-[350px]">
-      <div className="absolute top-4 left-4 z-20 flex flex-wrap gap-2 pointer-events-auto">
+      <div className={`absolute top-4 left-4 z-20 flex flex-wrap gap-2 transition-all duration-300 ease-out ${
+        hideToolbar
+          ? 'opacity-0 -translate-y-3 pointer-events-none'
+          : 'opacity-100 translate-y-0 pointer-events-auto'
+      }`}>
         <button
           id="btn-toggle-follow-view"
           onClick={() => setFollowVehicle(!followVehicle)}
@@ -411,7 +597,11 @@ export default function MapContainer({
         </button>
       </div>
 
-      <div className="absolute top-4 right-20 z-20 pointer-events-auto">
+      <div className={`absolute top-4 right-20 z-20 transition-all duration-300 ease-out ${
+        hideToolbar
+          ? 'opacity-0 -translate-y-3 pointer-events-none'
+          : 'opacity-100 translate-y-0 pointer-events-auto'
+      }`}>
         <div
           onClick={() => setShowConfig(true)}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-mono font-medium shadow-lg hover:brightness-110 cursor-pointer backdrop-blur border ${
@@ -426,7 +616,11 @@ export default function MapContainer({
       </div>
 
       {showConfig && (
-        <div className="absolute top-16 left-4 z-30 max-w-sm w-full bg-slate-900/95 backdrop-blur-md rounded-2xl border border-slate-800 p-5 shadow-2xl pointer-events-auto text-slate-200 font-sans">
+        <div className={`absolute top-16 left-4 z-30 max-w-sm w-full bg-slate-900/95 backdrop-blur-md rounded-2xl border border-slate-800 p-5 shadow-2xl text-slate-200 font-sans transition-all duration-300 ease-out ${
+          hideToolbar
+            ? 'opacity-0 -translate-y-3 pointer-events-none'
+            : 'opacity-100 translate-y-0 pointer-events-auto'
+        }`}>
           <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-2">
             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
               <Settings size={14} />
@@ -537,7 +731,11 @@ export default function MapContainer({
         </div>
       )}
 
-      <div className="absolute left-4 bottom-44 z-20 max-w-sm bg-slate-950/80 backdrop-blur-md border border-slate-800 rounded-2xl shadow-xl px-4 py-3 text-slate-200">
+      <div className={`absolute left-4 bottom-44 z-20 max-w-sm bg-slate-950/80 backdrop-blur-md border border-slate-800 rounded-2xl shadow-xl px-4 py-3 text-slate-200 transition-all duration-300 ease-out ${
+        hideRoutePreview
+          ? 'opacity-0 translate-x-[-12px] pointer-events-none'
+          : 'opacity-100 translate-x-0 pointer-events-auto'
+      }`}>
         <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-mono">路线预览</div>
         <div className="mt-1 text-sm font-semibold text-white">{tripData.roadName}</div>
         <div className="mt-1 text-xs text-slate-400 leading-relaxed">{tripData.description}</div>

@@ -24,6 +24,47 @@ export function interpolateRouteCoordinate(route: Coordinate[], currentProgress:
   ];
 }
 
+export function splitRouteAtProgress(route: Coordinate[], currentProgress: number) {
+  if (!route || route.length === 0) {
+    return {
+      traveledPath: [] as Coordinate[],
+      remainingPath: [] as Coordinate[],
+      splitPoint: [103.9471, 30.5745] as Coordinate,
+    };
+  }
+
+  if (route.length === 1) {
+    return {
+      traveledPath: [route[0]],
+      remainingPath: [route[0]],
+      splitPoint: route[0],
+    };
+  }
+
+  const maxIdx = route.length - 1;
+  const progress = Math.max(0, Math.min(maxIdx, currentProgress));
+  const idxFloor = Math.floor(progress);
+  const idxCeil = Math.ceil(progress);
+  const splitPoint = interpolateRouteCoordinate(route, progress);
+
+  if (idxFloor === idxCeil) {
+    return {
+      traveledPath: route.slice(0, idxFloor + 1),
+      remainingPath: route.slice(idxFloor),
+      splitPoint,
+    };
+  }
+
+  const traveledPath = [...route.slice(0, idxFloor + 1), splitPoint];
+  const remainingPath = [splitPoint, ...route.slice(idxCeil)];
+
+  return {
+    traveledPath,
+    remainingPath,
+    splitPoint,
+  };
+}
+
 export function geoDistanceMeters([lng1, lat1]: Coordinate, [lng2, lat2]: Coordinate): number {
   const earthRadius = 6371000;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;

@@ -14,6 +14,7 @@ interface TimelineProps {
   nodePositions: Array<{ node: KeyNode; position: number }>;
   onSelectNode: (node: KeyNode) => void;
   activeNode: KeyNode | null;
+  currentPlaybackDay: number;
 }
 
 export default function Timeline({
@@ -28,6 +29,7 @@ export default function Timeline({
   nodePositions,
   onSelectNode,
   activeNode,
+  currentPlaybackDay,
 }: TimelineProps) {
   const days = React.useMemo(() => {
     const list = previewNodes
@@ -64,7 +66,7 @@ export default function Timeline({
     return closest.node;
   }, [nodePositions, currentProgress]);
 
-  const currentDay = playbackNode?.day || activeNode?.day || 1;
+  const currentDay = currentPlaybackDay || activeNode?.day || 1;
 
   const jumpToDay = (dayNum: number) => {
     const targetNode = previewNodes.find((node) => node.day === dayNum);

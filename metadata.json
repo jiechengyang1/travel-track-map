@@ -1,6 +1,6 @@
 {
   "name": "Travel Track Map",
-  "description": "基于 Mapbox GL JS 的自用/分享版旅行轨迹与相册时间轴互动地图。支持读取 trip.json、时间轴联动、照片查看及轨迹动画播放，可完美零成本部署到 GitHub Pages。",
+  "description": "基于 高德地图 的自用/分享版旅行轨迹与相册时间轴互动地图。支持读取 trip.json、时间轴联动、照片查看及轨迹动画播放，可完美零成本部署到 GitHub Pages。",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
