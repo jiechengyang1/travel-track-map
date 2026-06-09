@@ -449,6 +449,9 @@ export default function MapContainer({
     const lngSpan = Math.max(maxLng - minLng, 0.12);
     const latSpan = Math.max(maxLat - minLat, 0.12);
     const dominantSpan = Math.max(lngSpan, latSpan);
+    const containerWidth = containerRef.current?.clientWidth || 1;
+    const containerHeight = containerRef.current?.clientHeight || 1;
+    const aspectRatio = Math.max(containerWidth / Math.max(containerHeight, 1), 0.8);
 
     const playbackZoom = dominantSpan > 8 ? 6.1
       : dominantSpan > 5 ? 6.8
@@ -458,8 +461,10 @@ export default function MapContainer({
       : dominantSpan > 0.45 ? 10.1
       : 11.2;
 
+    const visualLngOffset = lngSpan * (aspectRatio > 1.3 ? 0.16 : 0.08);
+
     map.setZoom?.(playbackZoom);
-    map.setCenter([centerLng, centerLat]);
+    map.setCenter([centerLng - visualLngOffset, centerLat]);
     lastFocusedPlaybackDayRef.current = currentPlaybackDay;
     hasAppliedPlaybackZoomRef.current = true;
 

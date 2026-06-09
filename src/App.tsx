@@ -9,6 +9,7 @@ import NodeMediaPanel from './components/NodeMediaPanel';
 import DataController from './components/DataController';
 
 const PLAYBACK_PREPARE_TIMEOUT_MS = 260;
+const PLAYBACK_PREPARE_ANIMATION_SECONDS = PLAYBACK_PREPARE_TIMEOUT_MS / 1000;
 
 export default function App() {
   const [tripData, setTripData] = useState<TripData>(defaultTrip);
@@ -29,6 +30,7 @@ export default function App() {
   const [isImmersiveMapMode, setIsImmersiveMapMode] = useState<boolean>(false);
   const [isPageHovered, setIsPageHovered] = useState<boolean>(false);
   const autoPlayedNodeIdsRef = useRef<Set<string>>(new Set());
+  const playbackPrepareTimeoutRef = useRef<number | null>(null);
 
   const flattenedRoute = useMemo(() => {
     const validSegments = tripData.segments.filter((segment) => segment.path.length >= 2);
@@ -249,18 +251,28 @@ export default function App() {
     return Math.max(3000, Math.min(45000, estimated || 3000));
   }, []);
 
-  const finishNodeAutoPlayback = useCallback(() => {
-    setMediaQueue([]);
-    setMediaQueueIndex(0);
-    setAutoPlaybackNodeId(null);
-    setIsPlaying(true);
-  }, []);
-
   const beginPlayback = useCallback(() => {
     setIsImmersiveMapMode(true);
     setIsPreparingPlayback(true);
     setIsPlaying(false);
+
+    if (playbackPrepareTimeoutRef.current) {
+      window.clearTimeout(playbackPrepareTimeoutRef.current);
+    }
+
+    playbackPrepareTimeoutRef.current = window.setTimeout(() => {
+      setIsPreparingPlayback(false);
+      setIsPlaying(true);
+      playbackPrepareTimeoutRef.current = null;
+    }, PLAYBACK_PREPARE_TIMEOUT_MS);
   }, []);
+
+  const finishNodeAutoPlayback = useCallback(() => {
+    setMediaQueue([]);
+    setMediaQueueIndex(0);
+    setAutoPlaybackNodeId(null);
+    beginPlayback();
+  }, [beginPlayback]);
 
   const handleAutoAdvance = useCallback(() => {
     setMediaQueueIndex((prev) => {
@@ -377,6 +389,10 @@ export default function App() {
             hideRoutePreview={shouldHideRoutePreview}
             hideToolbar={shouldHideToolbar}
             onPlaybackFocusReady={() => {
+              if (playbackPrepareTimeoutRef.current) {
+                window.clearTimeout(playbackPrepareTimeoutRef.current);
+                playbackPrepareTimeoutRef.current = null;
+              }
               setIsPreparingPlayback(false);
               setIsPlaying(true);
             }}
@@ -416,7 +432,7 @@ export default function App() {
             setIsImmersiveMapMode(true);
             setCurrentProgress(progress);
           }}
-          isPlaying={isPlaying}
+          isPlaying={isPlaying || isPreparingPlayback}
           setIsPlaying={(playing) => {
             if (playing) {
               beginPlayback();
