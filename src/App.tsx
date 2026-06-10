@@ -8,8 +8,8 @@ import Timeline from './components/Timeline';
 import NodeMediaPanel from './components/NodeMediaPanel';
 import DataController from './components/DataController';
 
-const PLAYBACK_PREPARE_TIMEOUT_MS = 260;
-const PLAYBACK_PREPARE_ANIMATION_SECONDS = PLAYBACK_PREPARE_TIMEOUT_MS / 1000;
+const PLAYBACK_PREPARE_TIMEOUT_MS = 2000;
+const PLAYBACK_PREPARE_ANIMATION_SECONDS = 1.2;
 
 export default function App() {
   const [tripData, setTripData] = useState<TripData>(defaultTrip);
@@ -267,12 +267,17 @@ export default function App() {
     }, PLAYBACK_PREPARE_TIMEOUT_MS);
   }, []);
 
+  const resumePlayback = useCallback(() => {
+    setIsPreparingPlayback(false);
+    setIsPlaying(true);
+  }, []);
+
   const finishNodeAutoPlayback = useCallback(() => {
     setMediaQueue([]);
     setMediaQueueIndex(0);
     setAutoPlaybackNodeId(null);
-    beginPlayback();
-  }, [beginPlayback]);
+    resumePlayback();
+  }, [resumePlayback]);
 
   const handleAutoAdvance = useCallback(() => {
     setMediaQueueIndex((prev) => {
@@ -403,18 +408,18 @@ export default function App() {
 
         <div className="w-[420px] max-w-[38vw] min-w-[360px] h-full border-l border-slate-800 bg-slate-950/92 backdrop-blur-xl shadow-2xl">
           <NodeMediaPanel
-            node={activeNode}
-            memories={activeNodeMemories}
-            activeMedia={activePanelMedia}
-            activeIndex={activePanelIndex}
-            autoPlay={Boolean(currentAutoMedia && currentAutoMedia.keyNodeId === activeNode?.id)}
-            autoAdvanceMs={currentAutoMedia ? getMediaAutoAdvanceMs(currentAutoMedia) : undefined}
-            onAutoAdvance={currentAutoMedia ? handleAutoAdvance : undefined}
+            node={isPreparingPlayback ? null : activeNode}
+            memories={isPreparingPlayback ? [] : activeNodeMemories}
+            activeMedia={isPreparingPlayback ? null : activePanelMedia}
+            activeIndex={isPreparingPlayback ? -1 : activePanelIndex}
+            autoPlay={isPreparingPlayback ? false : Boolean(currentAutoMedia && currentAutoMedia.keyNodeId === activeNode?.id)}
+            autoAdvanceMs={isPreparingPlayback ? undefined : (currentAutoMedia ? getMediaAutoAdvanceMs(currentAutoMedia) : undefined)}
+            onAutoAdvance={isPreparingPlayback ? undefined : (currentAutoMedia ? handleAutoAdvance : undefined)}
             onSelectMedia={handlePhotoClick}
-            onPrev={handlePrevPanelMedia}
-            onNext={handleNextPanelMedia}
-            hasPrev={hasPrevPanelMedia}
-            hasNext={hasNextPanelMedia}
+            onPrev={isPreparingPlayback ? undefined : handlePrevPanelMedia}
+            onNext={isPreparingPlayback ? undefined : handleNextPanelMedia}
+            hasPrev={isPreparingPlayback ? false : hasPrevPanelMedia}
+            hasNext={isPreparingPlayback ? false : hasNextPanelMedia}
           />
         </div>
       </div>

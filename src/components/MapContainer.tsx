@@ -423,56 +423,39 @@ export default function MapContainer({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !window.AMap || (!isPlaying && !isPreparingPlayback) || currentDaySegments.length === 0 || currentPlaybackDay == null) return;
-    if (lastFocusedPlaybackDayRef.current === currentPlaybackDay) {
-      if (isPreparingPlayback) {
-        onPlaybackFocusReady();
-      }
+    if (!map || !window.AMap || (!isPlaying && !isPreparingPlayback) || currentPlaybackDay == null) return;
+
+    // 播放中跨天：不做 setFitView，让自动跟随自然过渡，避免频闪
+    if (isPlaying) {
+      lastFocusedPlaybackDayRef.current = currentPlaybackDay;
       return;
     }
 
+    // 首次准备播放：setFitView 动画居中当天路线，完成后再启动小汽车
+    if (lastFocusedPlaybackDayRef.current === currentPlaybackDay) {
+      onPlaybackFocusReady();
+      return;
+    }
+
+    if (currentDaySegments.length === 0) return;
     const points = currentDaySegments.flat();
     if (points.length === 0) return;
 
-    const [minLng, maxLng, minLat, maxLat] = points.reduce(
-      ([minLngAcc, maxLngAcc, minLatAcc, maxLatAcc], [lng, lat]) => [
-        Math.min(minLngAcc, lng),
-        Math.max(maxLngAcc, lng),
-        Math.min(minLatAcc, lat),
-        Math.max(maxLatAcc, lat),
-      ],
-      [Infinity, -Infinity, Infinity, -Infinity] as [number, number, number, number],
-    );
+    const tempFitLine = new window.AMap.Polyline({
+      path: points,
+      strokeOpacity: 0,
+      strokeWeight: 1,
+    });
+    tempFitLine.setMap(map);
 
-    const centerLng = (minLng + maxLng) / 2;
-    const centerLat = (minLat + maxLat) / 2;
-    const lngSpan = Math.max(maxLng - minLng, 0.12);
-    const latSpan = Math.max(maxLat - minLat, 0.12);
-    const dominantSpan = Math.max(lngSpan, latSpan);
-    const containerWidth = containerRef.current?.clientWidth || 1;
-    const containerHeight = containerRef.current?.clientHeight || 1;
-    const aspectRatio = Math.max(containerWidth / Math.max(containerHeight, 1), 0.8);
-
-    const playbackZoom = dominantSpan > 8 ? 6.1
-      : dominantSpan > 5 ? 6.8
-      : dominantSpan > 3 ? 7.6
-      : dominantSpan > 1.8 ? 8.5
-      : dominantSpan > 1 ? 9.2
-      : dominantSpan > 0.45 ? 10.1
-      : 11.2;
-
-    const visualLngOffset = lngSpan * (aspectRatio > 1.3 ? 0.16 : 0.08);
-
-    map.setZoom?.(playbackZoom);
-    map.setCenter([centerLng - visualLngOffset, centerLat]);
+    map.setFitView([tempFitLine], false, [60, 60, 60, 60]);
     lastFocusedPlaybackDayRef.current = currentPlaybackDay;
     hasAppliedPlaybackZoomRef.current = true;
 
-    if (isPreparingPlayback) {
-      window.setTimeout(() => {
-        onPlaybackFocusReady();
-      }, 160);
-    }
+    window.setTimeout(() => {
+      tempFitLine.setMap(null);
+      onPlaybackFocusReady();
+    }, 1200);
   }, [isPlaying, isPreparingPlayback, currentDaySegments, currentPlaybackDay, onPlaybackFocusReady]);
 
   useEffect(() => {
@@ -538,7 +521,7 @@ export default function MapContainer({
       vehicleMarkerRef.current.setPosition(travelerCoord);
     }
 
-    if (followVehicle) {
+    if (followVehicle || isPlaying) {
       const lastCenter = lastFollowCenterRef.current;
       const movedFarEnough = !lastCenter ||
         Math.abs(lastCenter[0] - travelerCoord[0]) > 0.02 ||
@@ -580,16 +563,16 @@ export default function MapContainer({
       }`}>
         <button
           id="btn-toggle-follow-view"
-          onClick={() => setFollowVehicle(!followVehicle)}
+          onClick={() => { if (!isPlaying) setFollowVehicle(!followVehicle); }}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg backdrop-blur border transition ${
-            followVehicle
+            isPlaying || followVehicle
               ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold'
               : 'bg-slate-900/80 hover:bg-slate-800 text-slate-200 border-slate-700/60'
-          }`}
-          title="开启/关闭跟随视角，播放时摄像头会自动跟随模拟车辆移动"
+          } ${isPlaying ? 'cursor-default' : ''}`}
+          title={isPlaying ? '播放中自动锁定车辆居中，暂停后可手动切换。' : '手动跟随视角开关。播放时地图会自动锁定车辆居中，无需手动开启。'}
         >
-          <Navigation size={13} className={followVehicle ? 'rotate-45 fill-slate-950' : 'text-slate-400'} />
-          <span>{followVehicle ? '正在跟随车辆 🚗' : '自主环视视角'}</span>
+          <Navigation size={13} className={isPlaying || followVehicle ? 'rotate-45 fill-slate-950' : 'text-slate-400'} />
+          <span>{isPlaying || followVehicle ? '正在跟随车辆 🚗' : '自主环视视角'}</span>
         </button>
 
         <button
